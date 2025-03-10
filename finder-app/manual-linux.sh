@@ -111,7 +111,7 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 
 # Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp -rL ${THIS_DIR}/finder-app/* ${OUTDIR}/rootfs/home
+cp -rL ${FINDER_APP_DIR}/* ${OUTDIR}/rootfs/home
 
 # Chown the root directory
 sudo chown -R root:root ${OUTDIR}/rootfs
