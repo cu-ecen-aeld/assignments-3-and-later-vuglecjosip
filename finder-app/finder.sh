@@ -1,40 +1,25 @@
 #!/bin/sh
+# finder.sh
+# Usage: finder.sh <directory> <search-string>
 
 if [ $# -ne 2 ]; then
-    echo "Error: You must provide both the directory and search string."
+    echo "Usage: $0 <directory> <search-string>"
     exit 1
 fi
 
-filesdir=$1
-searchstr=$2
+DIRECTORY=$1
+SEARCH_STRING=$2
 
-if [ ! -d "$filesdir" ]; then
-    echo "Error: $filesdir is not a valid directory."
+echo "Searching in directory: $DIRECTORY"
+echo "Searching for string: $SEARCH_STRING"
+
+if [ ! -d "$DIRECTORY" ]; then
+    echo "Directory $DIRECTORY does not exist"
     exit 1
 fi
 
-file_count=0
-line_count=0
+NUM_FILES=$(find "$DIRECTORY" -type f | wc -l)
+NUM_MATCHING_LINES=$(grep -r "$SEARCH_STRING" "$DIRECTORY" | wc -l)
 
-find "$filesdir" -type f | while IFS= read -r file; do
-    # Increment file counter
-    file_count=$((file_count + 1))
-
-    # Ensure file exists before processing
-    if [ ! -f "$file" ]; then
-        echo "Skipping non-file: $file"
-        continue
-    fi
-
-    # Count matches in the file
-    match_lines=$(grep -c "$searchstr" "$file" 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        line_count=$((line_count + match_lines))
-    else
-        echo "Error processing file: $file"
-    fi
-done
-
-
-echo "The number of files are $file_count and the number of matching lines are $line_count"
+echo "The number of files are $NUM_FILES and the number of matching lines are $NUM_MATCHING_LINES"
 
