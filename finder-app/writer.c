@@ -17,6 +17,10 @@ int main(int argc, char *argv[]) {
     char *writefile = argv[1];
     char *writestr = argv[2];
 
+    // Debugging output
+    printf("Attempting to write to file: %s\n", writefile);
+    printf("String to write: %s\n", writestr);
+
     // Write string to file
     FILE *file = fopen(writefile, "w");
     if (file == NULL) {
