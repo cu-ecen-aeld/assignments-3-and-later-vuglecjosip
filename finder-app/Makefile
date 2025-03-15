@@ -9,7 +9,7 @@ TARGET := writer
 all: $(TARGET)
 
 $(TARGET): writer.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -o $(TARGET) writer.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $^
 
 # Clean target
 clean:
