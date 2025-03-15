@@ -68,7 +68,7 @@ if [ $? -eq 0 ]; then
 	echo "success" > /tmp/assignment-4-result.txt
 	exit 0
 else
-	echo "failed: expected  ${MATCHSTR} but instead found ${OUTPUTSTRING}" > > /tmp/assignment-4-result.txt
+	echo "failed: expected  ${MATCHSTR} but instead found ${OUTPUTSTRING}" > /tmp/assignment-4-result.txt
 	exit 1
 fi
 
