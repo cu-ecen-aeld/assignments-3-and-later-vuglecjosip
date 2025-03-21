@@ -6,152 +6,201 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
-#include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <stdbool.h>
+#include <netdb.h>
+#include <signal.h>
+#include <sys/stat.h>
 
-#define PORT 9000
-#define BACKLOG 10
+#define PORT "9000"
 #define BUFFER_SIZE 1024
-#define FILE_PATH "/var/tmp/aesdsocketdata"
+#define DATA_FILE "/var/tmp/aesdsocketdata"
 
-int server_socket = -1;
-int client_socket = -1;
-int file_fd = -1;
+int server_fd;
+int running = 1;
 
-void cleanup() {
-    if (client_socket != -1) {
-        close(client_socket);
-        client_socket = -1;
-    }
-    if (server_socket != -1) {
-        close(server_socket);
-        server_socket = -1;
-    }
-    if (file_fd != -1) {
-        close(file_fd);
-        file_fd = -1;
-        remove(FILE_PATH);
-    }
-}
-
-void signal_handler(int signo) {
+void signal_handler(int sig) {
     syslog(LOG_INFO, "Caught signal, exiting");
-    cleanup();
+    running = 0;
+    if (server_fd != -1) {
+        close(server_fd);
+    }
+    remove(DATA_FILE);
+    closelog();
     exit(0);
 }
 
-void handle_client(int client_socket) {
-    char buffer[BUFFER_SIZE];
-    ssize_t bytes_received;
-    ssize_t bytes_written;
-
-    // Open the file for appending
-    file_fd = open(FILE_PATH, O_CREAT | O_APPEND | O_RDWR, 0644);
-    if (file_fd == -1) {
-        syslog(LOG_ERR, "Failed to open file: %s", strerror(errno));
-        return;
-    }
-
-    // Receive data from the client
-    while ((bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0)) > 0) {
-        // Write received data to the file
-        if (write(file_fd, buffer, bytes_received) != bytes_received) {
-            syslog(LOG_ERR, "Failed to write to file: %s", strerror(errno));
-            break;
-        }
-
-        // Check for newline and send the file content back to the client
-        if (strchr(buffer, '\n')) {
-            lseek(file_fd, 0, SEEK_SET); // Rewind the file
-            while ((bytes_written = read(file_fd, buffer, BUFFER_SIZE)) > 0) {
-                if (send(client_socket, buffer, bytes_written, 0) != bytes_written) {
-                    syslog(LOG_ERR, "Failed to send data to client: %s", strerror(errno));
-                    break;
-                }
-            }
-        }
-    }
-
-    if (bytes_received == -1) {
-        syslog(LOG_ERR, "Failed to receive data: %s", strerror(errno));
-    }
-
-    close(file_fd);
-    file_fd = -1;
-}
-
 int main(int argc, char *argv[]) {
-    struct sockaddr_in server_addr, client_addr;
+    struct addrinfo hints, *res, *p;
+    struct sockaddr_storage client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
-    bool daemon_mode = false;
+    char client_ip[INET6_ADDRSTRLEN];
+    char buffer[BUFFER_SIZE];
+    int data_fd, client_fd;
+    ssize_t bytes_received;
+    char *received_data = NULL;
+    size_t received_data_len = 0;
+    char *newline_pos;
+    int daemon_mode = 0;
 
-    // Parse command-line arguments
-    if (argc == 2 && strcmp(argv[1], "-d") == 0) {
-        daemon_mode = true;
-    }
+    openlog(NULL, 0, LOG_USER);
 
-    // Open syslog
-    openlog("aesdsocket", LOG_PID, LOG_USER);
-
-    // Set up signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // Create a socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        syslog(LOG_ERR, "Failed to create socket: %s", strerror(errno));
-        exit(EXIT_FAILURE);
+    if (argc > 1 && strcmp(argv[1], "-d") == 0) {
+        daemon_mode = 1;
     }
 
-    // Bind the socket to port 9000
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(PORT);
-
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        syslog(LOG_ERR, "Failed to bind socket: %s", strerror(errno));
-        cleanup();
-        exit(EXIT_FAILURE);
-    }
-
-    // Listen for incoming connections
-    if (listen(server_socket, BACKLOG) == -1) {
-        syslog(LOG_ERR, "Failed to listen on socket: %s", strerror(errno));
-        cleanup();
-        exit(EXIT_FAILURE);
-    }
-
-    // Run as a daemon if requested
     if (daemon_mode) {
-        if (daemon(0, 0) == -1) {
-            syslog(LOG_ERR, "Failed to run as daemon: %s", strerror(errno));
-            cleanup();
-            exit(EXIT_FAILURE);
+        pid_t pid = fork();
+        if (pid < 0) {
+            syslog(LOG_ERR, "fork error");
+            if (server_fd != -1) {
+                close(server_fd);
+            }
+            return -1;
         }
+        if (pid > 0) {
+            exit(0); // Parent exits
+        }
+        if (setsid() < 0) {
+            syslog(LOG_ERR, "setsid error");
+            if (server_fd != -1) {
+                close(server_fd);
+            }
+            return -1;
+        }
+
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
     }
 
-    syslog(LOG_INFO, "Server started on port %d", PORT);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-    // Accept and handle connections
-    while (1) {
-        client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_addr_len);
-        if (client_socket == -1) {
-            syslog(LOG_ERR, "Failed to accept connection: %s", strerror(errno));
+    if (getaddrinfo(NULL, PORT, &hints, &res) != 0) {
+        syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(errno));
+        return -1;
+    }
+    for (p = res; p != NULL; p = p->ai_next) {
+        server_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (server_fd == -1) {
+            continue;
+        }
+        int reuse = 1;
+        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
+            syslog(LOG_ERR, "setsockopt error: %s", strerror(errno));
+            close(server_fd);
+            continue;
+        }
+        if (bind(server_fd, p->ai_addr, p->ai_addrlen) == 0) {
+            break;
+        }
+        close(server_fd);
+    }
+    if (p == NULL) {
+        syslog(LOG_ERR, "Could not bind to any address");
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    freeaddrinfo(res);
+
+    if (listen(server_fd, 1) == -1) {
+        syslog(LOG_ERR, "Error listening for connections: %s", strerror(errno));
+        close(server_fd);
+        return -1;
+    }
+
+    while (running) {
+        client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
+        if (client_fd == -1) {
+            if (running) syslog(LOG_ERR, "Error accepting connection: %s", strerror(errno));
             continue;
         }
 
-        syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
-        handle_client(client_socket);
-        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
+        void *addr;
+        if (client_addr.ss_family == AF_INET) {
+            addr = &(((struct sockaddr_in *)&client_addr)->sin_addr);
+        } else {
+            addr = &(((struct sockaddr_in6 *)&client_addr)->sin6_addr);
+        }
+        inet_ntop(client_addr.ss_family, addr, client_ip, sizeof(client_ip));
+        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
 
-        close(client_socket);
-        client_socket = -1;
+        data_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
+        if (data_fd == -1) {
+            syslog(LOG_ERR, "Error opening/creating data file: %s", strerror(errno));
+            close(client_fd);
+            continue;
+        }
+
+        received_data_len = 0;
+        free(received_data);
+        received_data = NULL;
+
+        while ((bytes_received = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
+            char *temp = realloc(received_data, received_data_len + bytes_received);
+            if (temp == NULL) {
+                syslog(LOG_ERR, "realloc error");
+                break;
+            }
+            received_data = temp;
+            memcpy(received_data + received_data_len, buffer, bytes_received);
+            received_data_len += bytes_received;
+
+            while ((newline_pos = memchr(received_data, '\n', received_data_len)) != NULL) {
+                size_t packet_len = newline_pos - received_data + 1;
+                if (write(data_fd, received_data, packet_len) == -1) {
+                    syslog(LOG_ERR, "Error writing to data file: %s", strerror(errno));
+                }
+
+                lseek(data_fd, 0, SEEK_SET);
+
+                char *file_content = NULL;
+                size_t file_size = 0;
+                ssize_t read_size;
+                int read_fd = open(DATA_FILE, O_RDONLY);
+                if(read_fd == -1){
+                    syslog(LOG_ERR, "Error opening file for reading: %s", strerror(errno));
+                    break;
+                }
+
+                while ((read_size = read(read_fd, buffer, BUFFER_SIZE)) > 0) {
+                    char *temp_file = realloc(file_content, file_size + read_size);
+                    if(temp_file == NULL){
+                        syslog(LOG_ERR, "realloc error");
+                        break;
+                    }
+                    file_content = temp_file;
+                    memcpy(file_content + file_size, buffer, read_size);
+                    file_size += read_size;
+                }
+                if(read_size == -1){
+                    syslog(LOG_ERR, "Error reading from file: %s", strerror(errno));
+                }
+
+                if(file_content != NULL){
+                    send(client_fd, file_content, file_size, 0);
+                    free(file_content);
+                }
+
+                close(read_fd);
+
+                received_data_len -= packet_len;
+                memmove(received_data, received_data + packet_len, received_data_len);
+            }
+        }
+        free(received_data);
+        received_data = NULL;
+
+        close(data_fd);
+        syslog(LOG_INFO, "Closed connection from %s", client_ip);
+        close(client_fd);
     }
-
-    cleanup();
     return 0;
 }
