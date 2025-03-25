@@ -1,12 +1,15 @@
-CC = gcc
-CFLAGS = -Wall -Werror -g
-TARGET = aesdsocket
+CC ?= $(CROSS_COMPILE)gcc
+CFLAGS ?= -g -Wall -Werror
+TARGET ?= aesdsocket
+LDFLAGS ?= -lpthread -lrt
 
-all: $(TARGET)
+all: aesdsocket
 
-$(TARGET): aesdsocket.c
-	$(CC) $(CFLAGS) -o $(TARGET) aesdsocket.c
+${TARGET}: ${TARGET}.o
+	$(CC) ${TARGET}.o -o ${TARGET} $(CFLAGS) ${LDFLAGS}
+
+${TARGET}.o: ${TARGET}.c ${TARGET}.h
+	$(CC) -c ${TARGET}.c -o ${TARGET}.o $(CFLAGS) ${LDFLAGS}
 
 clean:
-    # Ensure this line is indented with a tab
-	rm -f $(TARGET)
+	rm -f *.o ${TARGET}
